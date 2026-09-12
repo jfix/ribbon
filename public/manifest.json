@@ -1,0 +1,30 @@
+{
+  "name": "Ribbon",
+  "short_name": "Ribbon",
+  "description": "Audiobooks you own, played from your phone, picked up right where you paused.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#111814",
+  "theme_color": "#111814",
+  "categories": ["books", "entertainment"],
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "share_target": {
+    "action": "./share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "files": [
+        { "name": "audio", "accept": ["audio/*", ".m4b", ".m4a", ".mp3", ".ogg", ".oga", ".opus", ".flac", ".aac", ".wav"] }
+      ]
+    }
+  }
+}
