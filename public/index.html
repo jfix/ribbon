@@ -592,11 +592,13 @@ async function importFiles(files){
   const pic=parsed.find(p=>p.picture)?.picture; const coverBlob=pic?new Blob([pic.data],{type:pic.format||'image/jpeg'}):null;
   confirmImport(draft,parsed,coverBlob);
 }
+function singleFileChapters(list,duration){ const out=list.filter(c=>c.start<duration).map(c=>({title:c.title,fileIndex:0,start:c.start,abs:c.start}));
+  if(out.length&&out[0].abs>0.5) out.unshift({title:'Beginning',fileIndex:0,start:0,abs:0}); return out; }
 function buildBook(parsed,overrides={}){
   const files=parsed.map(p=>({name:p.name,duration:p.duration||0,title:p.title||cleanName(p.name)}));
   const offsets=[]; let acc=0; for(const f of files){ offsets.push(acc); acc+=f.duration; }
   let chapters;
-  if(files.length===1&&parsed[0].chapters.length>1) chapters=parsed[0].chapters.filter(c=>c.start<acc).map(c=>({title:c.title,fileIndex:0,start:c.start,abs:c.start}));
+  if(files.length===1&&parsed[0].chapters.length>1) chapters=singleFileChapters(parsed[0].chapters,acc);
   else if(files.length>1) chapters=files.map((f,i)=>({title:f.title,fileIndex:i,start:0,abs:offsets[i]}));
   else chapters=[{title:files[0].title,fileIndex:0,start:0,abs:0}];
   if(chapters.length&&chapters[0].abs>0.5) chapters.unshift({title:'Beginning',fileIndex:0,start:0,abs:0});
@@ -665,8 +667,22 @@ async function drainInbox(){
 if(location.search.includes('shared=1')) history.replaceState(null,'',location.pathname);
 document.addEventListener('visibilitychange',()=>{ if(!document.hidden) drainInbox(); });
 
+/* ---------- migration: pick up chapters for single-file books imported before the mp4 chapter parser could read them ---------- */
+async function backfillChapters(){
+  let changed=0;
+  for(const b of LIB.values()){
+    if(b.demo||b.chaptersChecked||b.files.length!==1||b.chapters.length>1||!/\.(m4b|m4a|mp4)$/i.test(b.files[0].name||'')) continue;
+    try{ const blob=await tx('files','readonly',s=>s.get(b.id+'/0')); if(!blob) continue;
+      const found=await parseMp4Chapters(blob); if(found.length>1){ b.chapters=singleFileChapters(found,b.duration); changed++; }
+    }catch(e){ console.warn('chapter backfill failed for',b.title,e); }
+    b.chaptersChecked=1; await tx('books','readwrite',s=>s.put(b));
+  }
+  if(changed){ await renderLibrary(); if(P.book){ const fresh=LIB.get(P.book.id); if(fresh){ P.book=fresh; P.lastCh=chapterAt(fresh,absPos()); renderPlayer(); renderMini(); updateMediaSession(); } } toast(`Found chapters in ${changed} book${changed===1?'':'s'}`); }
+}
+
 /* ---------- boot ---------- */
 renderPlayState();
 await refreshLib(); await renderLibrary();
 drainInbox();
+backfillChapters();
 </script>
