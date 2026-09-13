@@ -30,5 +30,5 @@ npx wrangler deploy
 ## How it works
 
 - Books are copied into the browser's IndexedDB on import. Playback position is saved in localStorage every few seconds and on pause.
-- Tags, cover art and chapters are read in the browser with music-metadata, with a fallback parser for Nero-style `chpl` chapter atoms.
+- Tags, cover art and chapters are read in the browser with music-metadata, with a fallback parser for MP4 chapters that music-metadata misses: Nero-style `chpl` atoms and QuickTime-style chapter text tracks (what Audible-derived m4b files use).
 - Lock-screen and headphone controls use the Media Session API.

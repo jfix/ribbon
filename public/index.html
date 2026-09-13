@@ -338,13 +338,13 @@ function extractChapters(m){
   if(!out.length){ for(const [k,tags] of Object.entries(m.native||{})){ if(!/^ID3v2/.test(k)) continue; for(const t of tags){ if(t.id==='CHAP'&&t.value&&typeof t.value.startTimeMs==='number'){ const v=t.value; let title=v.subFrames?.TIT2; if(Array.isArray(title)) title=title[0]; if(title&&typeof title==='object') title=title.value; out.push({title:String(title||v.id||'Chapter'),start:v.startTimeMs/1000}); } } } }
   out.sort((a,b)=>a.start-b.start); return out;
 }
-async function parseChpl(file){
+async function parseMp4Chapters(file){
   const size=file.size; let pos=0;
   const readAt=async(off,len)=>new DataView(await file.slice(off,Math.min(size,off+len)).arrayBuffer());
   for(let guard=0;guard<64&&pos+8<=size;guard++){
     const h=await readAt(pos,16); let sz=h.getUint32(0); const type=String.fromCharCode(h.getUint8(4),h.getUint8(5),h.getUint8(6),h.getUint8(7)); let hdr=8;
     if(sz===1){ sz=Number(h.getBigUint64(8)); hdr=16; } else if(sz===0){ sz=size-pos; }
-    if(type==='moov'){ const buf=new Uint8Array(await file.slice(pos+hdr,pos+sz).arrayBuffer()); return findChpl(buf); }
+    if(type==='moov'){ const buf=new Uint8Array(await file.slice(pos+hdr,pos+sz).arrayBuffer()); const nero=findChpl(buf); if(nero.length) return nero; return await findTextTrackChapters(buf,file); }
     if(sz<8) break; pos+=sz;
   }
   return [];
@@ -360,7 +360,32 @@ function findChpl(buf){
   }
   return [];
 }
-
+// QuickTime-style chapters: a 'text' track whose samples are the titles, referenced by the audio track's tref/chap.
+async function findTextTrackChapters(moov,file){
+  const dv=new DataView(moov.buffer,moov.byteOffset,moov.byteLength); const dec=new TextDecoder();
+  const tag=o=>String.fromCharCode(moov[o],moov[o+1],moov[o+2],moov[o+3]);
+  function*atoms(start,end){ let o=start; while(o+8<=end){ let sz=dv.getUint32(o),hdr=8; if(sz===1){ sz=Number(dv.getBigUint64(o+8)); hdr=16; } else if(sz===0) sz=end-o; if(sz<hdr) return; yield {type:tag(o+4),body:o+hdr,end:o+sz}; o+=sz; } }
+  const find=(start,end,path)=>{ let s=start,e=end; for(const t of path){ let hit=null; for(const a of atoms(s,e)){ if(a.type===t){ hit=a; break; } } if(!hit) return null; s=hit.body; e=hit.end; } return {body:s,end:e}; };
+  const tracks=[]; const chapRefs=new Set();
+  for(const trak of atoms(0,moov.length)){ if(trak.type!=='trak') continue;
+    const tkhd=find(trak.body,trak.end,['tkhd']); const id=tkhd?dv.getUint32(tkhd.body+(moov[tkhd.body]===1?20:12)):0;
+    const ref=find(trak.body,trak.end,['tref','chap']); if(ref) for(let o=ref.body;o+4<=ref.end;o+=4) chapRefs.add(dv.getUint32(o));
+    const hdlr=find(trak.body,trak.end,['mdia','hdlr']); const kind=hdlr?tag(hdlr.body+8):'';
+    const mdhd=find(trak.body,trak.end,['mdia','mdhd']); const ts=mdhd?dv.getUint32(mdhd.body+(moov[mdhd.body]===1?20:12)):0;
+    const stbl=find(trak.body,trak.end,['mdia','minf','stbl']); if(!stbl) continue;
+    const t={id,kind,ts}; for(const a of atoms(stbl.body,stbl.end)) if(['stts','stsc','stsz','stco','co64'].includes(a.type)) t[a.type]=a; tracks.push(t); }
+  const cands=tracks.filter(t=>(t.kind==='text'||t.kind==='sbtl')&&t.ts&&t.stts&&t.stsz&&(t.stco||t.co64));
+  const t=cands.find(t=>chapRefs.has(t.id))||cands[0]; if(!t) return [];
+  const starts=[]; { let n=dv.getUint32(t.stts.body+4),o=t.stts.body+8,time=0; for(let i=0;i<n;i++,o+=8){ const cnt=dv.getUint32(o),dur=dv.getUint32(o+4); for(let k=0;k<cnt;k++){ starts.push(time/t.ts); time+=dur; } } }
+  const count=starts.length; if(!count) return [];
+  const sizes=[]; { const ss=dv.getUint32(t.stsz.body+4),n=dv.getUint32(t.stsz.body+8); for(let i=0;i<Math.min(n,count);i++) sizes.push(ss||dv.getUint32(t.stsz.body+12+i*4)); }
+  const chunks=[]; if(t.stco){ const n=dv.getUint32(t.stco.body+4); for(let i=0;i<n;i++) chunks.push(dv.getUint32(t.stco.body+8+i*4)); } else { const n=dv.getUint32(t.co64.body+4); for(let i=0;i<n;i++) chunks.push(Number(dv.getBigUint64(t.co64.body+8+i*8))); }
+  const stsc=[]; if(t.stsc){ const n=dv.getUint32(t.stsc.body+4); for(let i=0;i<n;i++) stsc.push({first:dv.getUint32(t.stsc.body+8+i*12),per:dv.getUint32(t.stsc.body+12+i*12)}); } if(!stsc.length) stsc.push({first:1,per:1});
+  const offsets=[]; { let si=0; for(let ci=0;ci<chunks.length&&si<sizes.length;ci++){ let per=1; for(const e of stsc){ if(e.first<=ci+1) per=e.per; else break; } let off=chunks[ci]; for(let k=0;k<per&&si<sizes.length;k++,si++){ offsets.push(off); off+=sizes[si]; } } }
+  const out=[];
+  for(let i=0;i<offsets.length;i++){ const len=sizes[i]; if(len<2) continue; const b=new Uint8Array(await file.slice(offsets[i],offsets[i]+len).arrayBuffer()); if(b.length<2) continue; const n=Math.min((b[0]<<8)|b[1],b.length-2); let title=dec.decode(b.subarray(2,2+n)).replace(/\0+$/,'').trim(); out.push({title:title||`Chapter ${i+1}`,start:starts[i]}); }
+  out.sort((a,b)=>a.start-b.start); return out;
+}
 /* ---------- covers ---------- */
 const coverCache=new Map();
 async function coverURL(id){ if(coverCache.has(id)) return coverCache.get(id); const blob=await tx('covers','readonly',s=>s.get(id)); const url=blob?URL.createObjectURL(blob):''; coverCache.set(id,url); return url; }
@@ -557,7 +582,7 @@ async function importFiles(files){
   for(let i=0;i<files.length;i++){ const f=files[i]; $('#impSub').textContent=`${i+1} of ${files.length}: ${f.name}`; $('#impBar').style.width=((i)/files.length*100)+'%';
     const info={name:f.name,file:f,title:null,album:null,artist:null,albumartist:null,composer:null,track:null,duration:null,picture:null,chapters:[]};
     if(mm){ try{ const m=await mm.parseBlob(f,{includeChapters:true}); const c=m.common||{}; info.title=c.title||null; info.album=c.album||null; info.artist=c.artist||null; info.albumartist=c.albumartist||null; info.composer=c.composer?.[0]||null; info.track=c.track?.no||null; info.duration=m.format?.duration||null; if(c.picture?.[0]) info.picture=c.picture[0]; info.chapters=extractChapters(m); }catch(e){ console.warn('metadata failed for',f.name,e); } }
-    if(!info.chapters.length&&/\.(m4b|m4a|mp4)$/i.test(f.name)){ try{ info.chapters=await parseChpl(f); }catch(e){ console.warn('chpl',e); } }
+    if(!info.chapters.length&&/\.(m4b|m4a|mp4)$/i.test(f.name)){ try{ info.chapters=await parseMp4Chapters(f); }catch(e){ console.warn('mp4 chapters',e); } }
     if(!info.duration){ info.duration=await probeDuration(f); }
     if(!info.duration){ toast(`Could not read the length of ${f.name}`); }
     parsed.push(info); }
