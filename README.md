@@ -32,3 +32,4 @@ npx wrangler deploy
 - Books are copied into the browser's IndexedDB on import. Playback position is saved in localStorage every few seconds and on pause.
 - Tags, cover art and chapters are read in the browser with music-metadata, with a fallback parser for MP4 chapters that music-metadata misses: Nero-style `chpl` atoms and QuickTime-style chapter text tracks (what Audible-derived m4b files use).
 - Lock-screen and headphone controls use the Media Session API.
+- Listening history is recorded automatically per book in IndexedDB (`sessions` store). A sitting is continuous listening to one book; resuming within 10 minutes continues it, skips and scrubbing don't count, and sittings under 15 seconds are dropped. Each book also keeps first/last listened times and total time listened. Tapping a sitting on the book page jumps back to where it began.

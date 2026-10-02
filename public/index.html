@@ -127,6 +127,24 @@ h1,h2,h3{margin:0;font-weight:600;text-wrap:balance}
 .chapters li.cur .t{color:var(--accent);font-weight:600}
 .chapters li.cur .n{color:var(--accent)}
 .chapters li.past .t{color:var(--muted)}
+.hist-sum{font-size:13.5px;color:var(--muted);margin:0 0 8px;line-height:1.5}
+.hist-sum b{color:var(--text);font-weight:600}
+.history{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+.history li{border-bottom:1px solid var(--line)}
+.h-row{display:block;width:100%;text-align:left;padding:10px 4px;border-radius:6px}
+.h-row:hover{background:var(--surface)}
+.h-go{display:inline-flex;color:var(--accent)}
+.h-go svg{width:14px;height:14px}
+.h-top{display:grid;grid-template-columns:1fr auto auto auto;gap:12px;align-items:baseline}
+.h-day{font-weight:600;font-size:14px}
+.h-time,.h-dur{font-family:var(--mono);font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.h-dur{color:var(--accent);min-width:7ch;text-align:right}
+.h-where{font-size:12.5px;color:var(--muted);margin-top:2px}
+.hist-more>summary{cursor:pointer;color:var(--accent);font-size:13px;font-weight:600;padding:10px 4px;list-style:none}
+.hist-more>summary::-webkit-details-marker{display:none}
+.hist-more[open]>summary{display:none}
+.hist-note{font-size:13px;color:var(--muted);margin:0}
+.book .b-when{font-size:12px;color:var(--muted);margin-top:-5px}
 
 .player .sheet-in{position:relative;overflow:hidden;padding-bottom:max(28px,env(safe-area-inset-bottom))}
 .art-wrap{display:flex;justify-content:center;align-items:center;flex:1;min-height:0;margin:10px 0 18px}
@@ -305,9 +323,14 @@ const ICON={
 
 /* ---------- storage ---------- */
 let dbp;
-function db(){ return dbp ??= new Promise((res,rej)=>{ const r=indexedDB.open('ribbon',1);
-  r.onupgradeneeded=e=>{ const d=e.target.result; d.createObjectStore('books',{keyPath:'id'}); d.createObjectStore('files'); d.createObjectStore('covers'); };
-  r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
+function db(){ return dbp ??= new Promise((res,rej)=>{ const r=indexedDB.open('ribbon',2);
+  r.onupgradeneeded=e=>{ const d=e.target.result;
+    if(!d.objectStoreNames.contains('books')) d.createObjectStore('books',{keyPath:'id'});
+    if(!d.objectStoreNames.contains('files')) d.createObjectStore('files');
+    if(!d.objectStoreNames.contains('covers')) d.createObjectStore('covers');
+    if(!d.objectStoreNames.contains('sessions')){ const st=d.createObjectStore('sessions',{keyPath:'id'}); st.createIndex('bookId','bookId'); } };
+  r.onblocked=()=>toast('Close other Ribbon tabs to finish updating');
+  r.onsuccess=()=>{ const d=r.result; d.onversionchange=()=>{ d.close(); dbp=null; }; res(d); }; r.onerror=()=>rej(r.error); }); }
 async function tx(store,mode,fn){ const d=await db(); return new Promise((res,rej)=>{ const t=d.transaction(store,mode); const req=fn(t.objectStore(store)); t.oncomplete=()=>res(req&&req.result); t.onerror=()=>rej(t.error); t.onabort=()=>rej(t.error); }); }
 const PKEY='ribbon.progress';
 function loadProgress(){ try{ return JSON.parse(localStorage.getItem(PKEY)||'{}'); }catch{ return {}; } }
@@ -422,13 +445,15 @@ async function renderLibrary(){
           <div class="c-title">${esc(recent.title)}</div>
           <div class="c-chap"><b>${esc(ch.title)}</b></div>
           <div class="c-meta">${fmtLong(left)} left in chapter · ${fmtLong(recent.duration-p.abs)} in book</div>
+          ${recent.lastListenedAt?`<div class="c-meta">Last listened ${ago(recent.lastListenedAt)}</div>`:''}
           <div class="c-actions"><button class="btn primary" data-play="${recent.id}">${ICON.play} Resume</button><button class="btn ghost sm" data-open="${recent.id}">Details</button></div>
         </div>
       </div>`; }
   $('#libCount').textContent=books.length===1?'1 book':`${books.length} books`;
   const cards=await Promise.all(books.map(async b=>{ const p=bookProgress(b); const url=await coverURL(b.id);
     const meta=p?.finished?`<div class="b-meta">Finished</div>`:p?`<div class="b-meta left">${fmtLong(b.duration-p.abs)} left</div>`:`<div class="b-meta">${esc(b.author||fmtLong(b.duration))}</div>`;
-    return `<button class="book" data-open="${b.id}"><div class="tile"><img src="${url}" alt="">${ribbon(b,p)}</div><div class="b-title">${esc(b.title)}</div>${meta}</button>`; }));
+    const when=b.lastListenedAt?`<div class="b-when">${shortAgo(b.lastListenedAt)}</div>`:'';
+    return `<button class="book" data-open="${b.id}"><div class="tile"><img src="${url}" alt="">${ribbon(b,p)}</div><div class="b-title">${esc(b.title)}</div>${meta}${when}</button>`; }));
   $('#grid').innerHTML=cards.join('');
 }
 function ribbon(b,p){ if(!p) return ''; if(p.finished) return `<div class="rib done" style="height:100%"></div>`; const pct=Math.max(8,Math.min(100,p.abs/b.duration*100)); return `<div class="rib" style="height:${pct.toFixed(1)}%"></div>`; }
@@ -445,7 +470,7 @@ async function renderBookSheet(){ const b=LIB.get(sheetBookId); if(!b) return; c
       <div>
         <h2 class="bk-title">${esc(b.title)}</h2>
         <div class="bk-author">${esc(b.author||'Unknown author')}</div>
-        <div class="bk-meta">${b.narrator?`Read by ${esc(b.narrator)}<br>`:''}${fmtLong(b.duration)} · ${b.chapters.length} chapter${b.chapters.length===1?'':'s'}${p&&!p.finished?`<br><span style="color:var(--accent)">${fmtLong(b.duration-p.abs)} left</span>`:''}${p?.finished?'<br>Finished':''}</div>
+        <div class="bk-meta">${b.narrator?`Read by ${esc(b.narrator)}<br>`:''}${fmtLong(b.duration)} · ${b.chapters.length} chapter${b.chapters.length===1?'':'s'}${p&&!p.finished?`<br><span style="color:var(--accent)">${fmtLong(b.duration-p.abs)} left</span>`:''}${p?.finished?'<br>Finished':''}${b.lastListenedAt?`<br>Last listened ${ago(b.lastListenedAt)}`:''}</div>
       </div>
     </div>
     <div class="bk-actions">
@@ -453,6 +478,7 @@ async function renderBookSheet(){ const b=LIB.get(sheetBookId); if(!b) return; c
       ${p?`<button class="btn ghost sm" data-reset="${b.id}">Start over</button>`:''}
       <button class="btn ghost sm danger" data-delete="${b.id}" style="margin-left:auto">Remove</button>
     </div>
+    ${await historyHTML(b)}
     <div class="section-h"><span class="eyebrow">Chapters</span><span class="eyebrow">${fmtLong(b.duration)}</span></div>
     <ul class="chapters">${rows}</ul>`;
 }
@@ -486,16 +512,111 @@ async function playBook(id,{open=true}={}){
 }
 async function seekAbs(abs,autoplay){ const b=P.book; if(!b) return; abs=Math.max(0,Math.min(b.duration-0.5,abs)); let idx=0; for(let i=0;i<b.offsets.length;i++) if(b.offsets[i]<=abs) idx=i; const off=abs-b.offsets[idx]; const play=autoplay??!audio.paused; await loadFile(b,idx,off,play); persist(true); }
 function persist(force){ if(!P.book) return; const now=Date.now(); if(!force&&now-P.lastSave<5000) return; P.lastSave=now; const last=P.fileIndex===P.book.files.length-1; const atEnd=audio.ended||(last&&isFinite(audio.duration)&&audio.duration-audio.currentTime<1); if(atEnd&&last){ saveProgress(P.book.id,{fileIndex:0,pos:0,rate:P.rate,finished:true}); return; } saveProgress(P.book.id,{fileIndex:P.fileIndex,pos:audio.currentTime,rate:P.rate,finished:false}); }
+async function playBookAt(b,abs){ if(!b) return;
+  if(P.book?.id!==b.id){ P.rate=loadProgress()[b.id]?.rate||1; let idx=0; for(let i=0;i<b.offsets.length;i++) if(b.offsets[i]<=abs) idx=i; await loadFile(b,idx,abs-b.offsets[idx],true); persist(true); }
+  else await seekAbs(abs,true);
+  openPlayer(); }
 function togglePlay(){ if(!P.book) return; if(audio.paused) audio.play().catch(()=>{}); else audio.pause(); }
 
 audio.addEventListener('timeupdate',()=>{ if(!P.book) return; persist(false); const ci=chapterAt(P.book,absPos()); if(ci!==P.lastCh){ P.lastCh=ci; updateMediaSession(); if(P.sleepMode==='chapter'){ audio.pause(); P.sleepMode=null; renderSleep(); toast('Sleep timer: end of chapter'); } } if(!P.scrubbing) renderTime(); renderMini(); updatePosition(); });
 audio.addEventListener('play',()=>{ renderPlayState(); if('mediaSession' in navigator) navigator.mediaSession.playbackState='playing'; });
 audio.addEventListener('pause',()=>{ persist(true); renderPlayState(); if('mediaSession' in navigator) navigator.mediaSession.playbackState='paused'; renderLibrary(); });
-audio.addEventListener('ended',async()=>{ const b=P.book; if(!b) return; if(P.fileIndex<b.files.length-1){ await loadFile(b,P.fileIndex+1,0,true); persist(true); } else { saveProgress(b.id,{fileIndex:0,pos:0,finished:true}); renderPlayState(); renderLibrary(); toast('Finished. Nicely done.'); } });
+audio.addEventListener('ended',async()=>{ const b=P.book; if(!b) return; if(P.fileIndex<b.files.length-1){ await loadFile(b,P.fileIndex+1,0,true); persist(true); } else { saveProgress(b.id,{fileIndex:0,pos:0,finished:true}); if(H.cur?.bookId===b.id){ H.cur.finished=true; H.cur.finishedAt=Date.now(); H.cur.endAbs=b.duration; } await flushSitting(); renderPlayState(); renderLibrary(); toast('Finished. Nicely done.'); } });
 audio.addEventListener('ratechange',()=>{ renderSpeed(); });
 document.addEventListener('visibilitychange',()=>{ if(document.hidden) persist(true); });
 window.addEventListener('pagehide',()=>persist(true));
 window.addEventListener('beforeunload',()=>persist(true));
+
+/* ---------- listening history: recorded automatically, nothing for the listener to do ----------
+   A "sitting" is one stretch of listening to one book. Pausing and resuming within HIST_GAP continues
+   the same sitting, even across an app restart. Only time actually heard counts: skips and scrubbing
+   are ignored. Sittings shorter than HIST_MIN are dropped as accidental taps. */
+const HIST_GAP=10*60*1000, HIST_MIN=15, HIST_FLUSH=15000;
+const H={cur:null,lastMedia:null,lastFile:-1,lastFlush:0};
+function sessionsFor(id){ return tx('sessions','readonly',s=>s.index('bookId').getAll(id)).then(r=>r||[]); }
+function openSitting(){
+  const b=P.book; if(!b) return; const now=Date.now();
+  if(H.cur&&H.cur.bookId===b.id&&now-H.cur.endedAt<HIST_GAP) return;
+  if(H.cur) flushSitting();
+  const fresh=H.cur={id:uid(),bookId:b.id,startedAt:now,endedAt:now,startAbs:absPos(),endAbs:absPos(),listened:0,audio:0,credited:0};
+  // After a restart, a sitting that ended moments ago is still the same sitting.
+  sessionsFor(b.id).then(list=>{ const prev=list.sort((x,y)=>y.endedAt-x.endedAt)[0];
+    if(!prev||H.cur!==fresh||fresh.startedAt-prev.endedAt>=HIST_GAP) return;
+    prev.endedAt=Math.max(prev.endedAt,fresh.endedAt); prev.endAbs=fresh.endAbs; prev.listened+=fresh.listened; prev.audio+=fresh.audio; H.cur=prev;
+  }).catch(()=>{});
+}
+function tickSitting(){
+  if(!P.book||audio.paused) return;
+  const t=audio.currentTime;
+  if(H.lastFile===P.fileIndex&&H.lastMedia!=null){ const dm=t-H.lastMedia;
+    if(dm>0&&dm<5){ if(!H.cur||H.cur.bookId!==P.book.id) openSitting(); H.cur.audio+=dm; H.cur.listened+=dm/(audio.playbackRate||1); } }
+  H.lastMedia=t; H.lastFile=P.fileIndex;
+  if(H.cur&&H.cur.bookId===P.book.id){ H.cur.endedAt=Date.now(); H.cur.endAbs=absPos(); }
+  if(Date.now()-H.lastFlush>HIST_FLUSH) flushSitting();
+}
+async function flushSitting(){
+  H.lastFlush=Date.now(); const c=H.cur; if(!c||c.listened<HIST_MIN) return;
+  const add=c.listened-c.credited; c.credited=c.listened; const rec={...c};
+  try{
+    const d=await db();
+    await new Promise((res,rej)=>{ const t=d.transaction(['sessions','books'],'readwrite'); t.objectStore('sessions').put(rec);
+      const bs=t.objectStore('books'); const g=bs.get(c.bookId);
+      g.onsuccess=()=>{ const b=g.result; if(!b) return;
+        b.lastListenedAt=c.endedAt; b.firstListenedAt=Math.min(b.firstListenedAt||c.startedAt,c.startedAt);
+        b.listenedSeconds=(b.listenedSeconds||0)+add; if(c.finished) b.finishedAt=c.finishedAt;
+        bs.put(b); syncBookStats(b); };
+      t.oncomplete=res; t.onerror=()=>rej(t.error); t.onabort=()=>rej(t.error); });
+  }catch(e){ c.credited-=add; console.warn('could not save listening history',e); }
+}
+const STAT_KEYS=['lastListenedAt','firstListenedAt','listenedSeconds','finishedAt','historySince'];
+function syncBookStats(b){ for(const o of new Set([LIB.get(b.id),P.book?.id===b.id?P.book:null])) if(o) for(const k of STAT_KEYS) if(b[k]!==undefined) o[k]=b[k]; }
+audio.addEventListener('play',()=>{ H.lastMedia=null; openSitting(); });
+audio.addEventListener('seeking',()=>{ H.lastMedia=null; });
+audio.addEventListener('timeupdate',tickSitting);
+audio.addEventListener('pause',async()=>{ await flushSitting(); if($('#sheetBook').classList.contains('open')) renderBookSheet(); });
+document.addEventListener('visibilitychange',()=>{ if(document.hidden) flushSitting(); });
+window.addEventListener('pagehide',()=>flushSitting());
+
+// Books listened to before history existed: keep the last-saved time as "last listened", and remember where history starts.
+async function seedHistory(){
+  const prog=loadProgress();
+  for(const b of [...LIB.values()]){ if(b.historySince) continue;
+    try{ const d=await db(); await new Promise((res,rej)=>{ const t=d.transaction('books','readwrite'); const bs=t.objectStore('books'); const g=bs.get(b.id);
+      g.onsuccess=()=>{ const r=g.result; if(!r||r.historySince) return; r.historySince=Date.now(); if(!r.lastListenedAt&&prog[b.id]?.updatedAt) r.lastListenedAt=prog[b.id].updatedAt; bs.put(r); syncBookStats(r); };
+      t.oncomplete=res; t.onerror=()=>rej(t.error); }); }catch(e){ console.warn('history seed',e); }
+  }
+}
+
+/* dates */
+const DAY=86400000;
+const dayStart=t=>{ const d=new Date(t); d.setHours(0,0,0,0); return d.getTime(); };
+const daysAgo=t=>Math.round((dayStart(Date.now())-dayStart(t))/DAY);
+const fTime=new Intl.DateTimeFormat(undefined,{hour:'2-digit',minute:'2-digit'});
+const fDay=new Intl.DateTimeFormat(undefined,{weekday:'short',day:'numeric',month:'short'});
+const fDayY=new Intl.DateTimeFormat(undefined,{day:'numeric',month:'short',year:'numeric'});
+function dayLabel(t){ const n=daysAgo(t); if(n===0) return 'Today'; if(n===1) return 'Yesterday'; return new Date(t).getFullYear()===new Date().getFullYear()?fDay.format(t):fDayY.format(t); }
+function ago(t){ if(Date.now()-t<120000) return 'just now'; const n=daysAgo(t); if(n===0) return `today at ${fTime.format(t)}`; if(n===1) return `yesterday at ${fTime.format(t)}`; if(n<7) return `${n} days ago`; return `on ${dayLabel(t)}`; }
+function shortAgo(t){ const n=daysAgo(t); if(n===0) return 'Today'; if(n===1) return 'Yesterday'; if(n<7) return `${n} days ago`; return dayLabel(t); }
+
+async function historyHTML(b){
+  let list=[]; try{ list=await sessionsFor(b.id); }catch{}
+  if(H.cur?.bookId===b.id&&H.cur.listened>=HIST_MIN){ list=list.filter(x=>x.id!==H.cur.id); list.push(H.cur); }
+  list.sort((x,y)=>y.startedAt-x.startedAt);
+  const head=`<div class="section-h"><span class="eyebrow">Listening history</span>${list.length?`<span class="eyebrow">${list.length} sitting${list.length===1?'':'s'}</span>`:''}</div>`;
+  if(!list.length) return head+`<p class="hist-note">${b.lastListenedAt?`Last listened ${ago(b.lastListenedAt)}. `:''}Each time you listen, it shows up here.</p>`;
+  const total=list.reduce((a,x)=>a+x.listened,0); const first=Math.min(...list.map(x=>x.startedAt));
+  const done=b.finishedAt||list.find(x=>x.finished)?.finishedAt;
+  const pct=a=>Math.round(Math.max(0,Math.min(1,a/b.duration))*100)+'%';
+  const where=x=>{ const a=chapterAt(b,x.startAbs), z=chapterAt(b,x.endAbs);
+    const ch=b.chapters.length>1?(a===z?`Chapter ${a+1}`:`Chapters ${a+1}–${z+1}`)+' · ':'';
+    return ch+`${pct(x.startAbs)} → ${x.finished?'the end':pct(x.endAbs)}`; };
+  const row=x=>`<li><button class="h-row" data-hist="${x.startAbs.toFixed(2)}" aria-label="${dayLabel(x.startedAt)}, ${fTime.format(x.startedAt)}: listen again from ${pct(x.startAbs)}"><div class="h-top"><span class="h-day">${dayLabel(x.startedAt)}</span><span class="h-time">${fTime.format(x.startedAt)}–${fTime.format(x.endedAt)}</span><span class="h-dur">${fmtLong(x.listened)}</span><span class="h-go" aria-hidden="true">${ICON.play}</span></div><div class="h-where">${where(x)}${x.finished?' · finished the book':''}</div></button></li>`;
+  const SHOW=5;
+  const rel=t=>{ const n=daysAgo(t); return n===0?'today':n===1?'yesterday':dayLabel(t); };
+  return head+`<p class="hist-sum"><b>${fmtLong(total)}</b> listened · started ${rel(first)}${done?` · finished ${rel(done)}`:''}${list.length>1?' · tap a sitting to hear it again':''}</p>
+    <ul class="history">${list.slice(0,SHOW).map(row).join('')}</ul>
+    ${list.length>SHOW?`<details class="hist-more"><summary>Show all ${list.length}</summary><ul class="history" style="border-top:0">${list.slice(SHOW).map(row).join('')}</ul></details>`:''}`;
+}
 
 function updateMediaSession(){ if(!('mediaSession' in navigator)||!P.book) return; const b=P.book; const ch=b.chapters[chapterAt(b,absPos())]; const art=coverCache.get(b.id);
   navigator.mediaSession.metadata=new MediaMetadata({title:ch?.title||b.title,artist:b.author||'',album:b.title,artwork:art?[{src:art,sizes:'600x600',type:'image/jpeg'}]:[]}); }
@@ -561,7 +682,10 @@ document.addEventListener('click',async e=>{
   const del=e.target.closest('[data-delete]'); if(del){ const id=del.dataset.delete; const b=LIB.get(id); if(!b||!confirm(`Remove "${b.title}" from this device? The audio files will be deleted from the app's storage.`)) return;
     if(P.book?.id===id){ audio.pause(); audio.removeAttribute('src'); if(P.url) URL.revokeObjectURL(P.url); P.book=null; P.fileIndex=-1; $('#mini').hidden=true; closePlayer(); }
     await tx('files','readwrite',s=>{ for(let i=0;i<b.files.length;i++) s.delete(id+'/'+i); }); await tx('covers','readwrite',s=>s.delete(id)); await tx('books','readwrite',s=>s.delete(id)); clearProgress(id); coverCache.delete(id);
+    if(H.cur?.bookId===id) H.cur=null;
+    await tx('sessions','readwrite',s=>{ const r=s.index('bookId').openKeyCursor(IDBKeyRange.only(id)); r.onsuccess=()=>{ const c=r.result; if(c){ s.delete(c.primaryKey); c.continue(); } }; });
     await refreshLib(); $('#bookClose').click(); renderLibrary(); toast('Removed'); return; }
+  const hist=e.target.closest('#bookBody [data-hist]'); if(hist){ await playBookAt(LIB.get(sheetBookId),+hist.dataset.hist); return; }
   const chap=e.target.closest('#bookBody [data-chap]'); if(chap){ const b=LIB.get(sheetBookId); const c=b.chapters[+chap.dataset.chap]; if(P.book?.id!==b.id){ P.rate=loadProgress()[b.id]?.rate||1; await loadFile(b,c.fileIndex,c.start,true); persist(true); } else await seekAbs(c.abs,true); openPlayer(); return; }
 });
 
@@ -684,5 +808,5 @@ async function backfillChapters(){
 renderPlayState();
 await refreshLib(); await renderLibrary();
 drainInbox();
-backfillChapters();
+seedHistory().then(()=>backfillChapters());
 </script>
