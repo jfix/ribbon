@@ -709,7 +709,7 @@ async function importFiles(files){
   const parsed=[];
   for(let i=0;i<files.length;i++){ const f=files[i]; $('#impSub').textContent=`${i+1} of ${files.length}: ${f.name}`; $('#impBar').style.width=((i)/files.length*100)+'%';
     const info={name:f.name,file:f,title:null,album:null,artist:null,albumartist:null,composer:null,track:null,duration:null,picture:null,chapters:[]};
-    if(mm){ try{ const m=await mm.parseBlob(f,{includeChapters:true}); const c=m.common||{}; info.title=c.title||null; info.album=c.album||null; info.artist=c.artist||null; info.albumartist=c.albumartist||null; info.composer=c.composer?.[0]||null; info.track=c.track?.no||null; info.duration=m.format?.duration||null; if(c.picture?.[0]) info.picture=c.picture[0]; info.chapters=extractChapters(m); }catch(e){ console.warn('metadata failed for',f.name,e); } }
+    if(mm){ try{ let m; try{ m=await mm.parseBlob(f,{includeChapters:true}); }catch(e){ console.warn('chapter parsing failed, reading tags only',f.name,e); m=await mm.parseBlob(f,{includeChapters:false}); } const c=m.common||{}; info.title=c.title||null; info.album=c.album||null; info.artist=c.artist||null; info.albumartist=c.albumartist||null; info.composer=c.composer?.[0]||null; info.track=c.track?.no||null; info.duration=m.format?.duration||null; if(c.picture?.[0]) info.picture=c.picture[0]; info.chapters=extractChapters(m); }catch(e){ console.warn('metadata failed for',f.name,e); } }
     if(!info.chapters.length&&/\.(m4b|m4a|mp4)$/i.test(f.name)){ try{ info.chapters=await parseMp4Chapters(f); }catch(e){ console.warn('mp4 chapters',e); } }
     if(!info.duration){ info.duration=await probeDuration(f); }
     if(!info.duration){ toast(`Could not read the length of ${f.name}`); }

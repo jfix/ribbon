@@ -571,7 +571,15 @@ def main():
                     help='model for re-hearing headings and gaps: small (default), base, or a path')
     ap.add_argument('--no-second-look', action='store_true', help='skip re-hearing headings and gaps')
     ap.add_argument('--chapters', help='apply an edited chapter list instead of detecting')
-    ap.add_argument('--out', help='output file (default: "<input> (chapters).<ext>")')
+    ap.add_argument('--out', help='output file (default: "<input> (chapters).m4b")')
+    ap.add_argument('--format', choices=['m4b', 'mp3'], default='m4b',
+                    help='m4b (default): AAC audio, every player jumps to chapters exactly. mp3: keeps the original '
+                         'audio, but players may land up to a minute off in long variable-bitrate files.')
+    ap.add_argument('--bitrate', default='64k', help='AAC bitrate for m4b output (default 64k)')
+    ap.add_argument('--review', action='store_true',
+                    help='open a page to check and adjust every chapter mark by ear, then write the file from there')
+    ap.add_argument('--port', type=int, default=0, help=argparse.SUPPRESS)
+    ap.add_argument('--no-browser', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--dry-run', action='store_true', help='write the chapter list but not the audio file')
     a = ap.parse_args()
 
@@ -581,15 +589,20 @@ def main():
     if not os.path.isfile(src):
         sys.exit(f'No such file: {src}')
     stem, ext = os.path.splitext(src)
-    out = a.out or f'{stem} (chapters){ext}'
+    fmt = (os.path.splitext(a.out)[1].lstrip('.').lower() if a.out else a.format).replace('m4a', 'm4b')
+    if fmt not in ('m4b', 'mp3'):
+        sys.exit('The output must be .m4b or .mp3.')
+    out = a.out or f'{stem} (chapters).{fmt}'
     list_path = (os.path.splitext(out)[0] if a.out else f'{stem} (chapters)') + '.json'
     total = duration(src)
 
+    if a.review and not a.chapters and os.path.isfile(list_path):
+        a.chapters = list_path  # review an existing list rather than detecting again
     if a.chapters:
         data = json.load(open(a.chapters))
-        chapters = [{'start': parse_ts(c['start']), 'title': c['title']} for c in data['chapters']]
+        chapters = [{**c, 'start': parse_ts(c['start'])} for c in data['chapters']]
         chapters.sort(key=lambda c: c['start'])
-        lang, warnings = data.get('language', a.lang), []
+        lang, warnings = data.get('language', a.lang), data.get('warnings', [])
     else:
         need('whisper-cli', 'brew install whisper-cpp')
         if a.lang not in ('auto', *LANGS):
@@ -641,11 +654,7 @@ def main():
     if not a.chapters and os.path.isfile(list_path):
         shutil.copyfile(list_path, list_path[:-5] + ' (backup).json')
         print(f'Kept the previous chapter list as "{os.path.basename(list_path)[:-5]} (backup).json".')
-    json.dump({'source': src, 'language': lang, 'duration': ts(total),
-               'note': 'Edit titles or start times, delete or add entries, then run again with --chapters this file.',
-               'warnings': warnings,
-               'chapters': [{**c, 'start': ts(c['start'])} for c in chapters]},
-              open(list_path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+    save_list(list_path, src, lang, total, warnings, chapters)
 
     print()
     for n, c in enumerate(chapters, 1):
@@ -657,10 +666,56 @@ def main():
     for w in warnings:
         print('Warning:', w)
     print(f'Chapter list: {list_path}')
+    if a.review:
+        import review
+        review.serve(src=src, list_path=list_path, out=out, fmt=fmt, bitrate=a.bitrate, total=total,
+                     work=work_dir(src), port=a.port, open_browser=not a.no_browser)
+        return
     if a.dry_run:
         return
+    n = write_output(src, chapters, out, fmt, a.bitrate, total, work_dir(src))
+    print(f'Wrote {n} chapters to {out}')
 
-    # write the chaptered copy
+
+def save_list(list_path, src, lang, total, warnings, chapters):
+    data = {'source': src, 'language': lang, 'duration': ts(total),
+            'note': 'Edit titles or start times, delete or add entries, then run again with --chapters this file, '
+                    'or use --review.',
+            'warnings': warnings,
+            'chapters': [{**c, 'start': ts(c['start'])} for c in sorted(chapters, key=lambda c: c['start'])]}
+    tmp = list_path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, list_path)
+
+
+def aac_encoder():
+    r = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'], capture_output=True, text=True)
+    return 'aac_at' if ' aac_at ' in r.stdout else 'aac'  # Apple's encoder on macOS, ffmpeg's own elsewhere
+
+
+def ensure_aac(src, work, bitrate, progress=None):
+    """Encode the book to AAC once and keep it, so writing the m4b again after edits takes seconds."""
+    path = os.path.join(work, f'audio-{bitrate}.m4a')
+    if os.path.isfile(path):
+        return path
+    total = duration(src)
+    tmp = path + '.part.m4a'
+    p = subprocess.Popen(['ffmpeg', '-v', 'error', '-y', '-nostats', '-progress', 'pipe:1', '-i', src, '-map', '0:a',
+                          '-c:a', aac_encoder(), '-b:a', bitrate, tmp], stdout=subprocess.PIPE, text=True)
+    for line in p.stdout:
+        if line.startswith('out_time_us=') and progress and line.strip()[12:].isdigit():
+            progress(min(1.0, int(line.strip()[12:]) / 1e6 / total))
+    if p.wait() != 0:
+        raise RuntimeError('ffmpeg could not encode the audio')
+    os.replace(tmp, path)
+    return path
+
+
+def write_output(src, chapters, out, fmt, bitrate, total, work, progress=None):
+    """Write a copy of the book with chapter markers. Returns the number of chapters found in the result."""
+    chapters = sorted(chapters, key=lambda c: c['start'])
+    ext = os.path.splitext(out)[1]
     with tempfile.NamedTemporaryFile('w', suffix='.txt', delete=False, encoding='utf-8') as f:
         f.write(';FFMETADATA1\n')
         for k, c in enumerate(chapters):
@@ -670,8 +725,17 @@ def main():
         meta = f.name
     tmp_out = out + '.part' + ext
     try:
-        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', src, '-i', meta, '-map', '0', '-map_metadata', '0',
-                        '-map_chapters', '1', '-c', 'copy', '-id3v2_version', '3', tmp_out], check=True)
+        if fmt == 'm4b':
+            if progress is None:
+                print('Encoding the audio to AAC (once per book)…', flush=True)
+            audio = ensure_aac(src, work, bitrate, progress)
+            subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', audio, '-i', meta, '-i', src,
+                            '-map', '0:a', '-map', '2:v?', '-map_metadata', '2', '-map_chapters', '1',
+                            '-c', 'copy', '-disposition:v', 'attached_pic', '-movflags', '+faststart',
+                            '-f', 'ipod', tmp_out], check=True)
+        else:
+            subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', src, '-i', meta, '-map', '0', '-map_metadata', '0',
+                            '-map_chapters', '1', '-c', 'copy', '-id3v2_version', '3', tmp_out], check=True)
         os.replace(tmp_out, out)
     finally:
         os.remove(meta)
@@ -679,9 +743,9 @@ def main():
             os.remove(tmp_out)
     r = subprocess.run(['ffprobe', '-v', 'error', '-show_chapters', '-of', 'json', out], capture_output=True, text=True)
     n = len(json.loads(r.stdout or '{}').get('chapters', []))
-    print(f'Wrote {n} chapters to {out}')
     if n != len(chapters):
-        sys.exit(f'Expected {len(chapters)} chapters in the output but found {n}.')
+        raise RuntimeError(f'Expected {len(chapters)} chapters in {out} but found {n}.')
+    return n
 
 
 if __name__ == '__main__':
