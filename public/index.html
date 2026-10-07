@@ -357,8 +357,12 @@ function probeDuration(file){ return new Promise(res=>{ let done=false; const a=
   a.preload='metadata'; a.onloadedmetadata=()=>fin(isFinite(a.duration)?a.duration:null); a.onerror=()=>fin(null); setTimeout(()=>fin(null),20000); a.src=url; }); }
 function extractChapters(m){
   const out=[]; const ch=m.format?.chapters;
-  if(Array.isArray(ch)) for(const c of ch){ const ts=c.timeScale||0; let start=null; if(ts) start=c.start/ts; else if(c.sampleOffset!=null&&m.format.sampleRate) start=c.sampleOffset/m.format.sampleRate; if(start!=null&&c.title) out.push({title:String(c.title).trim(),start}); }
-  if(!out.length){ for(const [k,tags] of Object.entries(m.native||{})){ if(!/^ID3v2/.test(k)) continue; for(const t of tags){ if(t.id==='CHAP'&&t.value&&typeof t.value.startTimeMs==='number'){ const v=t.value; let title=v.subFrames?.TIT2; if(Array.isArray(title)) title=title[0]; if(title&&typeof title==='object') title=title.value; out.push({title:String(title||v.id||'Chapter'),start:v.startTimeMs/1000}); } } } }
+  // music-metadata has used several shapes over versions: start/timeScale, sampleOffset, and (v11) start in seconds.
+  if(Array.isArray(ch)) for(const c of ch){ const ts=c.timeScale||0; let start=null; if(ts) start=c.start/ts; else if(c.sampleOffset!=null&&m.format.sampleRate) start=c.sampleOffset/m.format.sampleRate; else if(typeof c.start==='number'&&!/mp4|m4a|m4b|isom|quicktime/i.test(m.format.container||'')) start=c.start; /* mp4 keeps its own chapter-track parser */ if(start!=null&&isFinite(start)&&c.title) out.push({title:String(c.title).trim(),start}); }
+  if(!out.length){ for(const [k,tags] of Object.entries(m.native||{})){ if(!/^ID3v2/.test(k)) continue; for(const t of tags){ if(t.id!=='CHAP'||!t.value) continue; const v=t.value;
+    const ms=typeof v.startTimeMs==='number'?v.startTimeMs:typeof v.info?.startTime==='number'?v.info.startTime:null; if(ms==null) continue;
+    let title=v.frames instanceof Map?v.frames.get('TIT2'):v.subFrames?.TIT2; if(Array.isArray(title)) title=title[0]; if(title&&typeof title==='object') title=title.value;
+    out.push({title:String(title||v.label||v.id||'Chapter'),start:ms/1000}); } } }
   out.sort((a,b)=>a.start-b.start); return out;
 }
 async function parseMp4Chapters(file){
